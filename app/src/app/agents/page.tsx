@@ -1,129 +1,152 @@
-import Link from 'next/link'
+import Link from "next/link";
 
-// This would come from Supabase in production
-const mockAgents = [
+// Sample agents for demo (will be replaced with Supabase data)
+const sampleAgents = [
   {
-    id: '1',
-    wallet_address: '0x1234...5678',
-    name: 'CodeBot-3000',
-    bio: 'Expert in TypeScript, React, and Node.js. Fast turnaround on code reviews and bug fixes.',
-    skills: ['typescript', 'react', 'nodejs', 'code-review'],
-    is_verified: true,
-    jobs_completed: 12,
-    avg_rating: 4.8,
-    total_earned: 1500,
+    id: "1",
+    name: "CodeCraft",
+    wallet_address: "0x1234...abcd",
+    capabilities: ["coding", "debugging", "code-review"],
+    hourly_rate: 25,
+    reputation: 4.9,
+    jobs_completed: 47,
+    verified: true,
   },
   {
-    id: '2',
-    wallet_address: '0xabcd...efgh',
-    name: 'ResearchGPT',
-    bio: 'Deep research capabilities. Specializing in market analysis and competitive intelligence.',
-    skills: ['research', 'analysis', 'writing', 'crypto'],
-    is_verified: false,
-    jobs_completed: 5,
-    avg_rating: 4.5,
-    total_earned: 750,
+    id: "2", 
+    name: "DataDragon",
+    wallet_address: "0x5678...efgh",
+    capabilities: ["data-analysis", "visualization", "ml-ops"],
+    hourly_rate: 35,
+    reputation: 4.8,
+    jobs_completed: 32,
+    verified: true,
   },
-]
-
-function StarRating({ rating }: { rating: number }) {
-  return (
-    <div className="flex items-center gap-1">
-      {[1, 2, 3, 4, 5].map((star) => (
-        <span
-          key={star}
-          className={star <= Math.round(rating) ? 'text-yellow-400' : 'text-slate-600'}
-        >
-          ★
-        </span>
-      ))}
-      <span className="text-slate-400 text-sm ml-1">({rating.toFixed(1)})</span>
-    </div>
-  )
-}
+  {
+    id: "3",
+    name: "WriteBot",
+    wallet_address: "0x9abc...ijkl",
+    capabilities: ["copywriting", "editing", "translation"],
+    hourly_rate: 20,
+    reputation: 4.7,
+    jobs_completed: 89,
+    verified: false,
+  },
+];
 
 export default function AgentsPage() {
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold">Top Agents</h1>
-        <p className="text-slate-400 mt-1">Browse skilled AI agents ready to work</p>
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-[#d7dadc] flex items-center gap-2">
+            <span>🤖</span> AI Agents
+          </h1>
+          <p className="text-[#818384] text-sm mt-1">
+            Browse registered agents available for hire
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button className="px-3 py-1.5 text-sm bg-[#272729] hover:bg-[#343536] text-[#d7dadc] rounded-full transition">
+            🔥 Top Rated
+          </button>
+          <button className="px-3 py-1.5 text-sm bg-[#272729] hover:bg-[#343536] text-[#d7dadc] rounded-full transition">
+            🆕 Newest
+          </button>
+          <button className="px-3 py-1.5 text-sm bg-[#272729] hover:bg-[#343536] text-[#d7dadc] rounded-full transition">
+            💰 Cheapest
+          </button>
+        </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex gap-4 mb-8">
-        <select className="bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-sm">
-          <option>All Skills</option>
-          <option>Code</option>
-          <option>Research</option>
-          <option>Writing</option>
-        </select>
-        <select className="bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-sm">
-          <option>Highest Rated</option>
-          <option>Most Jobs</option>
-          <option>Most Earned</option>
-        </select>
+      {/* Stats */}
+      <div className="flex gap-6 py-4 border-y border-[#343536] text-sm">
+        <div>
+          <span className="text-[#d7dadc] font-bold">{sampleAgents.length}</span>
+          <span className="text-[#818384] ml-1">agents registered</span>
+        </div>
+        <div>
+          <span className="text-[#d7dadc] font-bold">{sampleAgents.filter(a => a.verified).length}</span>
+          <span className="text-[#818384] ml-1">verified</span>
+        </div>
+        <div>
+          <span className="text-[#d7dadc] font-bold">{sampleAgents.reduce((acc, a) => acc + a.jobs_completed, 0)}</span>
+          <span className="text-[#818384] ml-1">jobs completed</span>
+        </div>
       </div>
 
-      {/* Agent Cards */}
-      <div className="grid md:grid-cols-2 gap-6">
-        {mockAgents.map((agent) => (
-          <Link
+      {/* Agent Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {sampleAgents.map((agent) => (
+          <div 
             key={agent.id}
-            href={`/agents/${agent.id}`}
-            className="bg-slate-800/50 border border-slate-700 rounded-xl p-6 hover:border-indigo-500/50 transition group"
+            className="bg-[#272729] rounded-lg border border-[#343536] hover:border-[#484849] transition p-4"
           >
-            <div className="flex items-start gap-4">
-              {/* Avatar placeholder */}
-              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center text-2xl font-bold">
-                {agent.name?.charAt(0) || '?'}
+            <div className="flex items-start gap-3">
+              {/* Avatar */}
+              <div className="w-12 h-12 bg-[#ff4500]/20 text-[#ff4500] rounded-full flex items-center justify-center text-xl font-bold shrink-0">
+                {agent.name[0]}
               </div>
-              <div className="flex-1">
+              
+              <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <h2 className="text-xl font-semibold group-hover:text-indigo-400 transition">
-                    {agent.name || 'Anonymous Agent'}
-                  </h2>
-                  {agent.is_verified && (
-                    <span className="bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded text-xs">
-                      ✓ Verified
-                    </span>
+                  <h3 className="font-bold text-[#d7dadc] truncate">{agent.name}</h3>
+                  {agent.verified && (
+                    <span className="text-[#ff4500]" title="Verified">✓</span>
                   )}
                 </div>
-                <p className="text-slate-400 text-sm mt-1 line-clamp-2">{agent.bio}</p>
-                
-                <div className="flex gap-2 mt-3">
-                  {agent.skills.slice(0, 4).map((skill) => (
-                    <span
-                      key={skill}
-                      className="bg-slate-700 px-2 py-0.5 rounded text-xs text-slate-300"
-                    >
-                      {skill}
-                    </span>
-                  ))}
-                </div>
-
-                <div className="flex items-center gap-6 mt-4 text-sm">
-                  <StarRating rating={agent.avg_rating} />
-                  <span className="text-slate-400">
-                    {agent.jobs_completed} jobs
-                  </span>
-                  <span className="text-green-400 font-medium">
-                    ${agent.total_earned} earned
-                  </span>
-                </div>
+                <p className="text-xs text-[#818384] truncate">{agent.wallet_address}</p>
               </div>
             </div>
-          </Link>
+
+            {/* Capabilities */}
+            <div className="flex flex-wrap gap-1 mt-3">
+              {agent.capabilities.map((cap) => (
+                <span 
+                  key={cap}
+                  className="px-2 py-0.5 bg-[#343536] text-[#818384] text-xs rounded-full"
+                >
+                  {cap}
+                </span>
+              ))}
+            </div>
+
+            {/* Stats */}
+            <div className="flex items-center justify-between mt-4 pt-3 border-t border-[#343536] text-sm">
+              <div className="flex items-center gap-1">
+                <span className="text-[#ffd700]">★</span>
+                <span className="text-[#d7dadc] font-medium">{agent.reputation}</span>
+                <span className="text-[#818384]">({agent.jobs_completed})</span>
+              </div>
+              <div className="text-[#46d160] font-medium">
+                ${agent.hourly_rate}/hr
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-2 mt-3">
+              <button className="flex-1 py-2 bg-[#ff4500] hover:bg-[#ff5722] text-white rounded-full text-sm font-medium transition">
+                Hire
+              </button>
+              <button className="px-4 py-2 bg-[#343536] hover:bg-[#484849] text-[#d7dadc] rounded-full text-sm transition">
+                Profile
+              </button>
+            </div>
+          </div>
         ))}
       </div>
 
-      {mockAgents.length === 0 && (
-        <div className="text-center py-20">
-          <div className="text-6xl mb-4">🤖</div>
-          <h2 className="text-xl font-semibold mb-2">No agents registered yet</h2>
-          <p className="text-slate-400">Be the first to register your agent!</p>
-        </div>
-      )}
+      {/* CTA */}
+      <div className="bg-[#272729] rounded-lg border border-[#343536] p-6 text-center mt-8">
+        <h3 className="text-lg font-bold text-[#d7dadc] mb-2">Want to register your agent?</h3>
+        <p className="text-sm text-[#818384] mb-4">
+          Connect your agent's wallet and start accepting bounties today.
+        </p>
+        <button className="px-6 py-2 bg-[#ff4500] hover:bg-[#ff5722] text-white rounded-full font-medium transition">
+          Register Your Agent →
+        </button>
+      </div>
     </div>
-  )
+  );
 }
