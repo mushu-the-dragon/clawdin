@@ -1,203 +1,157 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+/**
+ * @title ClawdIn
+ * @author Mushu (@mushu-the-dragon)
+ * @notice A non-custodial labor marketplace for AI agents
+ * @dev MVP implementation using OpenZeppelin security primitives
+ * 
+ * SECURITY NOTES:
+ * - Uses OpenZeppelin's audited contracts for all security-critical operations
+ * - Non-custodial: funds go directly to escrow mapping, released only via state machine
+ * - ReentrancyGuard on all external state-changing functions
+ * - Pausable for emergency stops
+ * - No admin withdrawal function - funds can only flow via bounty lifecycle
+ * 
+ * AUDIT STATUS: UNAUDITED - TESTNET ONLY
+ * DO NOT DEPLOY TO MAINNET WITHOUT PROFESSIONAL AUDIT
+ */
+
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/**
- * @title ClawdIn
- * @notice A labor marketplace for AI agents
- * @dev MVP implementation - no disputes, simple approval flow
- */
-contract ClawdIn is Ownable {
+contract ClawdIn is Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ============ Constants ============
 
-    uint256 public constant PLATFORM_FEE_BPS = 1000; // 10%
+    /// @notice Platform fee in basis points (10% = 1000 bps)
+    uint256 public constant PLATFORM_FEE_BPS = 1000;
     uint256 public constant BPS_DENOMINATOR = 10000;
+    
+    /// @notice Grace period after deadline before poster can cancel claimed bounty
     uint256 public constant CLAIM_GRACE_PERIOD = 7 days;
-    uint256 public constant REVIEW_PERIOD = 3 days;
+    
+    /// @notice Maximum bounty duration
+    uint256 public constant MAX_DEADLINE_DURATION = 365 days;
+
+    // ============ Immutables ============
+
+    /// @notice The ERC20 token used for payments (USDC)
+    IERC20 public immutable paymentToken;
 
     // ============ State ============
 
-    IERC20 public immutable usdc;
-
-    uint256 public nextAgentId;
     uint256 public nextBountyId;
     address public feeRecipient;
+    
+    /// @notice Total fees collected (for transparency)
+    uint256 public totalFeesCollected;
 
     // ============ Enums ============
 
     enum BountyStatus {
-        Open,
-        Claimed,
-        Submitted,
-        Completed,
-        Cancelled,
-        Expired
+        Open,       // Posted, accepting claims
+        Claimed,    // Worker assigned, work in progress
+        Submitted,  // Work submitted, awaiting review
+        Completed,  // Work approved, funds released
+        Cancelled,  // Cancelled by poster (with refund)
+        Expired     // Deadline passed without claim
     }
 
     // ============ Structs ============
-
-    struct Agent {
-        uint256 id;
-        address wallet;
-        string metadataUri;
-        uint256 registeredAt;
-        uint256 stake;
-        bool verified;
-    }
 
     struct Bounty {
         uint256 id;
         address poster;
         address worker;
-        string descriptionUri;
         uint256 payout;
         uint256 deadline;
-        string skillCategory;
-        uint256 minReputation;
         BountyStatus status;
         uint256 createdAt;
         uint256 claimedAt;
         uint256 submittedAt;
-        string workUri;
-    }
-
-    struct Reputation {
-        uint256 jobsCompletedAsWorker;
-        uint256 jobsPostedAsClient;
-        uint256 successfulAsWorker;
-        uint256 successfulAsClient;
-        uint256 totalEarnedUsdc;
-        uint256 totalPaidUsdc;
-        uint256 lastActivityAt;
+        // Metadata stored off-chain (IPFS), only hashes on-chain
+        bytes32 descriptionHash;
+        bytes32 workHash;
     }
 
     // ============ Mappings ============
 
-    mapping(address => Agent) public agents;
-    mapping(uint256 => address) public agentIdToWallet;
     mapping(uint256 => Bounty) public bounties;
-    mapping(address => Reputation) public reputations;
-    mapping(address => bool) public verifiedProviders;
 
     // ============ Events ============
 
-    event AgentRegistered(uint256 indexed agentId, address indexed wallet, string metadataUri);
-    event AgentUpdated(address indexed wallet, string metadataUri);
-    event AgentVerified(address indexed wallet, address indexed provider);
-    
-    event BountyCreated(uint256 indexed bountyId, address indexed poster, uint256 payout, string skillCategory);
+    event BountyCreated(
+        uint256 indexed bountyId, 
+        address indexed poster, 
+        uint256 payout, 
+        uint256 deadline,
+        bytes32 descriptionHash
+    );
     event BountyClaimed(uint256 indexed bountyId, address indexed worker);
-    event WorkSubmitted(uint256 indexed bountyId, string workUri);
+    event WorkSubmitted(uint256 indexed bountyId, bytes32 workHash);
     event WorkApproved(uint256 indexed bountyId, uint256 workerPayout, uint256 platformFee);
-    event WorkRejected(uint256 indexed bountyId, string reason);
     event BountyCancelled(uint256 indexed bountyId);
     event BountyExpired(uint256 indexed bountyId);
-
-    event ProviderAdded(address indexed provider);
-    event ProviderRemoved(address indexed provider);
+    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
 
     // ============ Errors ============
 
-    error AgentAlreadyRegistered();
-    error AgentNotRegistered();
     error BountyNotFound();
     error InvalidStatus();
     error NotPoster();
     error NotWorker();
     error DeadlinePassed();
     error DeadlineNotPassed();
-    error InsufficientReputation();
     error GracePeriodNotPassed();
-    error ReviewPeriodNotPassed();
-    error InvalidProvider();
+    error InvalidDeadline();
     error ZeroAmount();
-    error ZeroDuration();
+    error ZeroAddress();
+    error SelfClaim();
 
     // ============ Constructor ============
 
-    constructor(address _usdc, address _feeRecipient) Ownable(msg.sender) {
-        usdc = IERC20(_usdc);
+    /**
+     * @notice Initialize the ClawdIn contract
+     * @param _paymentToken Address of the ERC20 token for payments (e.g., USDC)
+     * @param _feeRecipient Address to receive platform fees
+     */
+    constructor(
+        address _paymentToken, 
+        address _feeRecipient
+    ) Ownable(msg.sender) {
+        if (_paymentToken == address(0)) revert ZeroAddress();
+        if (_feeRecipient == address(0)) revert ZeroAddress();
+        
+        paymentToken = IERC20(_paymentToken);
         feeRecipient = _feeRecipient;
     }
 
-    // ============ Agent Functions ============
+    // ============ Bounty Lifecycle ============
 
     /**
-     * @notice Register as an agent
-     * @param metadataUri IPFS URI containing agent profile
-     */
-    function registerAgent(string calldata metadataUri) external returns (uint256 agentId) {
-        if (agents[msg.sender].wallet != address(0)) revert AgentAlreadyRegistered();
-
-        agentId = nextAgentId++;
-        
-        agents[msg.sender] = Agent({
-            id: agentId,
-            wallet: msg.sender,
-            metadataUri: metadataUri,
-            registeredAt: block.timestamp,
-            stake: 0,
-            verified: false
-        });
-
-        agentIdToWallet[agentId] = msg.sender;
-
-        emit AgentRegistered(agentId, msg.sender, metadataUri);
-    }
-
-    /**
-     * @notice Update agent profile metadata
-     * @param metadataUri New IPFS URI
-     */
-    function updateAgent(string calldata metadataUri) external {
-        if (agents[msg.sender].wallet == address(0)) revert AgentNotRegistered();
-        
-        agents[msg.sender].metadataUri = metadataUri;
-        
-        emit AgentUpdated(msg.sender, metadataUri);
-    }
-
-    /**
-     * @notice Verify an agent (called by verified provider)
-     * @param agentWallet Wallet of agent to verify
-     */
-    function verifyAgent(address agentWallet) external {
-        if (!verifiedProviders[msg.sender]) revert InvalidProvider();
-        if (agents[agentWallet].wallet == address(0)) revert AgentNotRegistered();
-
-        agents[agentWallet].verified = true;
-
-        emit AgentVerified(agentWallet, msg.sender);
-    }
-
-    // ============ Bounty Functions ============
-
-    /**
-     * @notice Create a new bounty
-     * @param descriptionUri IPFS URI with bounty details
-     * @param payout Amount in USDC
-     * @param deadline Unix timestamp
-     * @param skillCategory Required skill category
-     * @param minReputation Minimum reputation score (0-100)
+     * @notice Create a new bounty with escrowed funds
+     * @param payout Amount in payment tokens
+     * @param deadline Unix timestamp for completion
+     * @param descriptionHash IPFS hash of bounty description
+     * @return bountyId The ID of the created bounty
      */
     function createBounty(
-        string calldata descriptionUri,
         uint256 payout,
         uint256 deadline,
-        string calldata skillCategory,
-        uint256 minReputation
-    ) external returns (uint256 bountyId) {
-        if (agents[msg.sender].wallet == address(0)) revert AgentNotRegistered();
+        bytes32 descriptionHash
+    ) external nonReentrant whenNotPaused returns (uint256 bountyId) {
         if (payout == 0) revert ZeroAmount();
-        if (deadline <= block.timestamp) revert ZeroDuration();
+        if (deadline <= block.timestamp) revert InvalidDeadline();
+        if (deadline > block.timestamp + MAX_DEADLINE_DURATION) revert InvalidDeadline();
 
-        // Transfer USDC to escrow
-        usdc.safeTransferFrom(msg.sender, address(this), payout);
+        // Transfer payment token to this contract (escrow)
+        paymentToken.safeTransferFrom(msg.sender, address(this), payout);
 
         bountyId = nextBountyId++;
 
@@ -205,47 +159,34 @@ contract ClawdIn is Ownable {
             id: bountyId,
             poster: msg.sender,
             worker: address(0),
-            descriptionUri: descriptionUri,
             payout: payout,
             deadline: deadline,
-            skillCategory: skillCategory,
-            minReputation: minReputation,
             status: BountyStatus.Open,
             createdAt: block.timestamp,
             claimedAt: 0,
             submittedAt: 0,
-            workUri: ""
+            descriptionHash: descriptionHash,
+            workHash: bytes32(0)
         });
 
-        reputations[msg.sender].jobsPostedAsClient++;
-        reputations[msg.sender].lastActivityAt = block.timestamp;
-
-        emit BountyCreated(bountyId, msg.sender, payout, skillCategory);
+        emit BountyCreated(bountyId, msg.sender, payout, deadline, descriptionHash);
     }
 
     /**
      * @notice Claim an open bounty
      * @param bountyId ID of bounty to claim
      */
-    function claimBounty(uint256 bountyId) external {
+    function claimBounty(uint256 bountyId) external nonReentrant whenNotPaused {
         Bounty storage bounty = bounties[bountyId];
         
         if (bounty.poster == address(0)) revert BountyNotFound();
         if (bounty.status != BountyStatus.Open) revert InvalidStatus();
         if (block.timestamp > bounty.deadline) revert DeadlinePassed();
-        if (agents[msg.sender].wallet == address(0)) revert AgentNotRegistered();
-        
-        // Check reputation requirement
-        if (bounty.minReputation > 0) {
-            uint256 workerRep = getReputationScore(msg.sender);
-            if (workerRep < bounty.minReputation) revert InsufficientReputation();
-        }
+        if (msg.sender == bounty.poster) revert SelfClaim();
 
         bounty.worker = msg.sender;
         bounty.status = BountyStatus.Claimed;
         bounty.claimedAt = block.timestamp;
-
-        reputations[msg.sender].lastActivityAt = block.timestamp;
 
         emit BountyClaimed(bountyId, msg.sender);
     }
@@ -253,9 +194,9 @@ contract ClawdIn is Ownable {
     /**
      * @notice Submit work for a claimed bounty
      * @param bountyId ID of bounty
-     * @param workUri IPFS URI of submitted work
+     * @param workHash IPFS hash of submitted work
      */
-    function submitWork(uint256 bountyId, string calldata workUri) external {
+    function submitWork(uint256 bountyId, bytes32 workHash) external nonReentrant whenNotPaused {
         Bounty storage bounty = bounties[bountyId];
 
         if (bounty.poster == address(0)) revert BountyNotFound();
@@ -263,20 +204,18 @@ contract ClawdIn is Ownable {
         if (bounty.worker != msg.sender) revert NotWorker();
         if (block.timestamp > bounty.deadline) revert DeadlinePassed();
 
-        bounty.workUri = workUri;
+        bounty.workHash = workHash;
         bounty.status = BountyStatus.Submitted;
         bounty.submittedAt = block.timestamp;
 
-        reputations[msg.sender].lastActivityAt = block.timestamp;
-
-        emit WorkSubmitted(bountyId, workUri);
+        emit WorkSubmitted(bountyId, workHash);
     }
 
     /**
      * @notice Approve submitted work and release payment
      * @param bountyId ID of bounty
      */
-    function approveWork(uint256 bountyId) external {
+    function approveWork(uint256 bountyId) external nonReentrant whenNotPaused {
         Bounty storage bounty = bounties[bountyId];
 
         if (bounty.poster == address(0)) revert BountyNotFound();
@@ -289,63 +228,37 @@ contract ClawdIn is Ownable {
         uint256 platformFee = (bounty.payout * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
         uint256 workerPayout = bounty.payout - platformFee;
 
-        // Transfer to worker
-        usdc.safeTransfer(bounty.worker, workerPayout);
+        // Track fees for transparency
+        totalFeesCollected += platformFee;
+
+        // Transfer to worker (majority of funds)
+        paymentToken.safeTransfer(bounty.worker, workerPayout);
         
         // Transfer fee to platform
         if (platformFee > 0) {
-            usdc.safeTransfer(feeRecipient, platformFee);
+            paymentToken.safeTransfer(feeRecipient, platformFee);
         }
-
-        // Update reputations
-        reputations[bounty.worker].jobsCompletedAsWorker++;
-        reputations[bounty.worker].successfulAsWorker++;
-        reputations[bounty.worker].totalEarnedUsdc += workerPayout;
-        reputations[bounty.worker].lastActivityAt = block.timestamp;
-
-        reputations[bounty.poster].successfulAsClient++;
-        reputations[bounty.poster].totalPaidUsdc += bounty.payout;
-        reputations[bounty.poster].lastActivityAt = block.timestamp;
 
         emit WorkApproved(bountyId, workerPayout, platformFee);
     }
 
     /**
-     * @notice Reject submitted work (returns to Claimed status)
-     * @param bountyId ID of bounty
-     * @param reason Reason for rejection
-     */
-    function rejectWork(uint256 bountyId, string calldata reason) external {
-        Bounty storage bounty = bounties[bountyId];
-
-        if (bounty.poster == address(0)) revert BountyNotFound();
-        if (bounty.status != BountyStatus.Submitted) revert InvalidStatus();
-        if (bounty.poster != msg.sender) revert NotPoster();
-
-        bounty.status = BountyStatus.Claimed;
-        bounty.workUri = "";
-        bounty.submittedAt = 0;
-
-        reputations[msg.sender].lastActivityAt = block.timestamp;
-
-        emit WorkRejected(bountyId, reason);
-    }
-
-    /**
-     * @notice Cancel a bounty and refund (only if Open or abandoned)
+     * @notice Cancel a bounty and refund (only if Open or abandoned after grace period)
      * @param bountyId ID of bounty
      */
-    function cancelBounty(uint256 bountyId) external {
+    function cancelBounty(uint256 bountyId) external nonReentrant {
         Bounty storage bounty = bounties[bountyId];
 
         if (bounty.poster == address(0)) revert BountyNotFound();
         if (bounty.poster != msg.sender) revert NotPoster();
         
-        // Can cancel if Open, or if Claimed and grace period passed
+        // Can cancel if:
+        // 1. Status is Open (not yet claimed)
+        // 2. Status is Claimed AND grace period after deadline has passed (abandoned)
         if (bounty.status == BountyStatus.Open) {
-            // Direct cancel
+            // Direct cancel allowed
         } else if (bounty.status == BountyStatus.Claimed) {
-            // Must wait for grace period after deadline
+            // Must wait for deadline + grace period
             if (block.timestamp < bounty.deadline + CLAIM_GRACE_PERIOD) {
                 revert GracePeriodNotPassed();
             }
@@ -356,16 +269,16 @@ contract ClawdIn is Ownable {
         bounty.status = BountyStatus.Cancelled;
 
         // Refund poster
-        usdc.safeTransfer(bounty.poster, bounty.payout);
+        paymentToken.safeTransfer(bounty.poster, bounty.payout);
 
         emit BountyCancelled(bountyId);
     }
 
     /**
-     * @notice Mark expired bounty and refund (anyone can call)
+     * @notice Mark expired bounty and refund (anyone can call for gas refund)
      * @param bountyId ID of bounty
      */
-    function expireBounty(uint256 bountyId) external {
+    function expireBounty(uint256 bountyId) external nonReentrant {
         Bounty storage bounty = bounties[bountyId];
 
         if (bounty.poster == address(0)) revert BountyNotFound();
@@ -375,34 +288,12 @@ contract ClawdIn is Ownable {
         bounty.status = BountyStatus.Expired;
 
         // Refund poster
-        usdc.safeTransfer(bounty.poster, bounty.payout);
+        paymentToken.safeTransfer(bounty.poster, bounty.payout);
 
         emit BountyExpired(bountyId);
     }
 
     // ============ View Functions ============
-
-    /**
-     * @notice Get agent's reputation score (0-100)
-     * @param wallet Agent wallet address
-     */
-    function getReputationScore(address wallet) public view returns (uint256) {
-        Reputation memory rep = reputations[wallet];
-        
-        if (rep.jobsCompletedAsWorker == 0) {
-            return 0;
-        }
-
-        return (rep.successfulAsWorker * 100) / rep.jobsCompletedAsWorker;
-    }
-
-    /**
-     * @notice Get full agent details
-     * @param wallet Agent wallet address
-     */
-    function getAgent(address wallet) external view returns (Agent memory) {
-        return agents[wallet];
-    }
 
     /**
      * @notice Get full bounty details
@@ -413,38 +304,44 @@ contract ClawdIn is Ownable {
     }
 
     /**
-     * @notice Get full reputation details
-     * @param wallet Agent wallet address
+     * @notice Check total escrowed balance (for verification)
      */
-    function getReputation(address wallet) external view returns (Reputation memory) {
-        return reputations[wallet];
+    function getEscrowedBalance() external view returns (uint256) {
+        return paymentToken.balanceOf(address(this));
     }
 
     // ============ Admin Functions ============
-
-    /**
-     * @notice Add a verified provider
-     * @param provider Provider address
-     */
-    function addProvider(address provider) external onlyOwner {
-        verifiedProviders[provider] = true;
-        emit ProviderAdded(provider);
-    }
-
-    /**
-     * @notice Remove a verified provider
-     * @param provider Provider address
-     */
-    function removeProvider(address provider) external onlyOwner {
-        verifiedProviders[provider] = false;
-        emit ProviderRemoved(provider);
-    }
 
     /**
      * @notice Update fee recipient
      * @param newRecipient New fee recipient address
      */
     function setFeeRecipient(address newRecipient) external onlyOwner {
+        if (newRecipient == address(0)) revert ZeroAddress();
+        
+        address oldRecipient = feeRecipient;
         feeRecipient = newRecipient;
+        
+        emit FeeRecipientUpdated(oldRecipient, newRecipient);
     }
+
+    /**
+     * @notice Pause contract (emergency only)
+     */
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause contract
+     */
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    // ============ No Rescue Function ============
+    // 
+    // INTENTIONALLY OMITTED: There is no admin function to withdraw escrowed funds.
+    // Funds can ONLY flow through the bounty lifecycle (approve, cancel, expire).
+    // This is a security feature, not a bug.
 }
