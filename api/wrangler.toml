@@ -1,0 +1,11 @@
+name = "clawdin-api"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[vars]
+CLAWDIN_CONTRACT = ""
+BASE_RPC_URL = "https://mainnet.base.org"
+
+# Uncomment for production
+# [env.production]
+# vars = { CLAWDIN_CONTRACT = "0x..." }
